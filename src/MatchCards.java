@@ -48,6 +48,8 @@ public class MatchCards {
     JPanel boardPanel = new JPanel();
     JPanel restartGamePanel = new JPanel();
     JButton restartButton = new JButton();
+    JButton aiModeButton = new JButton();
+    JLabel aiStatusLabel = new JLabel();
 
     int errorCount = 0;
     ArrayList<JButton> board;
@@ -55,14 +57,22 @@ public class MatchCards {
     boolean gameReady = false;
     JButton card1Selected;
     JButton card2Selected;
+    
+    // AI Agent support
+    private AIAgent aiAgent;
+    private GameState gameState;
+    private boolean aiMode = false;
+    private boolean aiTurn = false;
+    private Timer aiMoveTimer;
 
     MatchCards() {
         setupCards();
         shuffleCards();
+        initializeAI();
 
         // frame.setVisible(true);
         frame.setLayout(new BorderLayout());
-        frame.setSize(boardWidth, boardHeight);
+        frame.setSize(boardWidth, boardHeight + 100); // Extra space for AI controls
         frame.setLocationRelativeTo(null);
         frame.setResizable(false);
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
@@ -72,8 +82,17 @@ public class MatchCards {
         textLabel.setHorizontalAlignment(JLabel.CENTER);
         textLabel.setText("Errors: " + Integer.toString(errorCount));
 
-        textPanel.setPreferredSize(new Dimension(boardWidth, 30));
-        textPanel.add(textLabel);
+        // AI status label
+        aiStatusLabel.setFont(new Font("Arial", Font.PLAIN, 16));
+        aiStatusLabel.setHorizontalAlignment(JLabel.CENTER);
+        aiStatusLabel.setText("Human Mode");
+        
+        JPanel topPanel = new JPanel(new GridLayout(2, 1));
+        topPanel.add(textLabel);
+        topPanel.add(aiStatusLabel);
+
+        textPanel.setPreferredSize(new Dimension(boardWidth, 60));
+        textPanel.add(topPanel);
         frame.add(textPanel, BorderLayout.NORTH);
 
         //card game board
@@ -88,32 +107,11 @@ public class MatchCards {
             tile.addActionListener(new ActionListener() {
                 @Override
                 public void actionPerformed(ActionEvent e) {
-                    if (!gameReady) {
-                        return;
+                    if (!gameReady || (aiMode && aiTurn)) {
+                        return; // Don't allow human moves during AI turn
                     }
                     JButton tile = (JButton) e.getSource();
-                    if (tile.getIcon() == cardBackImageIcon) {
-                        if (card1Selected == null) {
-                            card1Selected = tile;
-                            int index = board.indexOf(card1Selected);
-                            card1Selected.setIcon(cardSet.get(index).cardImageIcon);
-                        }
-                        else if (card2Selected == null) {
-                            card2Selected = tile;
-                            int index = board.indexOf(card2Selected);
-                            card2Selected.setIcon(cardSet.get(index).cardImageIcon);
-
-                            if (card1Selected.getIcon() != card2Selected.getIcon()) {
-                                errorCount += 1;
-                                textLabel.setText("Errors: " + Integer.toString(errorCount));
-                                hideCardTimer.start();
-                            }
-                            else {
-                                card1Selected = null;
-                                card2Selected = null;
-                            }
-                        }
-                    }
+                    handleCardClick(tile);
                 }
             });
             board.add(tile);
@@ -124,7 +122,7 @@ public class MatchCards {
         //restart game button
         restartButton.setFont(new Font("Arial", Font.PLAIN, 16));
         restartButton.setText("Restart Game");
-        restartButton.setPreferredSize(new Dimension(boardWidth, 30));
+        restartButton.setPreferredSize(new Dimension(boardWidth/2, 30));
         restartButton.setFocusable(false);
         restartButton.setEnabled(false);
         restartButton.addActionListener(new ActionListener() {
@@ -133,24 +131,26 @@ public class MatchCards {
                 if (!gameReady) {
                     return;
                 }
-
-                gameReady = false;
-                restartButton.setEnabled(false);
-                card1Selected = null;
-                card2Selected = null;
-                shuffleCards();
-
-                //re assign buttons with new cards
-                for (int i = 0; i < board.size(); i++) {
-                    board.get(i).setIcon(cardSet.get(i).cardImageIcon);
-                }
-
-                errorCount = 0;
-                textLabel.setText("Errors: " + Integer.toString(errorCount));
-                hideCardTimer.start();
+                restartGame();
             }
         });
-        restartGamePanel.add(restartButton);
+        
+        //AI mode toggle button
+        aiModeButton.setFont(new Font("Arial", Font.PLAIN, 16));
+        aiModeButton.setText("Enable AI Opponent");
+        aiModeButton.setPreferredSize(new Dimension(boardWidth/2, 30));
+        aiModeButton.setFocusable(false);
+        aiModeButton.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                toggleAIMode();
+            }
+        });
+        
+        JPanel buttonPanel = new JPanel(new GridLayout(1, 2));
+        buttonPanel.add(restartButton);
+        buttonPanel.add(aiModeButton);
+        restartGamePanel.add(buttonPanel);
         frame.add(restartGamePanel, BorderLayout.SOUTH);
 
         frame.pack();
@@ -165,6 +165,15 @@ public class MatchCards {
         });
         hideCardTimer.setRepeats(false);
         hideCardTimer.start();
+
+        // Initialize AI move timer
+        aiMoveTimer = new Timer(2000, new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                makeAIMove();
+            }
+        });
+        aiMoveTimer.setRepeats(false);
 
     }
 
@@ -246,6 +255,15 @@ public class MatchCards {
             card1Selected = null;
             card2Selected.setIcon(cardBackImageIcon);
             card2Selected = null;
+            
+            // If in AI mode, switch turns
+            if (aiMode) {
+                aiTurn = !aiTurn;
+                updateAIStatus();
+                if (aiTurn) {
+                    aiMoveTimer.start();
+                }
+            }
         }
         else { //flip all cards face down
             for (int i = 0; i < board.size(); i++) {
@@ -253,7 +271,166 @@ public class MatchCards {
             }
             gameReady = true;
             restartButton.setEnabled(true);
+            
+            // Start AI turn if in AI mode
+            if (aiMode) {
+                aiTurn = true;
+                updateAIStatus();
+                aiMoveTimer.start();
+            }
         }
+    }
+    
+    void initializeAI() {
+        // Create AI agent with medium difficulty
+        aiAgent = new MemoryMatchAI(DifficultyLevel.MEDIUM, "AI Opponent");
+        gameState = new GameState(cardSet.size());
+    }
+    
+    void toggleAIMode() {
+        aiMode = !aiMode;
+        if (aiMode) {
+            aiModeButton.setText("Disable AI Opponent");
+            aiTurn = false; // Human starts first
+            updateAIStatus();
+        } else {
+            aiModeButton.setText("Enable AI Opponent");
+            aiTurn = false;
+            aiStatusLabel.setText("Human Mode");
+        }
+        
+        // Reset the game when toggling AI mode
+        if (gameReady) {
+            restartGame();
+        }
+    }
+    
+    void updateAIStatus() {
+        if (aiMode) {
+            if (aiTurn) {
+                aiStatusLabel.setText("AI Turn (" + aiAgent.getDifficultyLevel() + ")");
+            } else {
+                aiStatusLabel.setText("Your Turn (vs " + aiAgent.getName() + ")");
+            }
+        } else {
+            aiStatusLabel.setText("Human Mode");
+        }
+    }
+    
+    void makeAIMove() {
+        if (!gameReady || !aiMode || !aiTurn) {
+            return;
+        }
+        
+        // Create array of available cards
+        boolean[] availableCards = new boolean[board.size()];
+        for (int i = 0; i < board.size(); i++) {
+            availableCards[i] = (board.get(i).getIcon() == cardBackImageIcon);
+        }
+        
+        int moveIndex = aiAgent.makeMove(gameState, availableCards);
+        
+        if (moveIndex >= 0 && moveIndex < board.size()) {
+            JButton selectedCard = board.get(moveIndex);
+            handleCardClick(selectedCard);
+        }
+    }
+    
+    void handleCardClick(JButton tile) {
+        if (tile.getIcon() == cardBackImageIcon) {
+            if (card1Selected == null) {
+                card1Selected = tile;
+                int index = board.indexOf(card1Selected);
+                card1Selected.setIcon(cardSet.get(index).cardImageIcon);
+                
+                // If AI mode and this is the AI's first card, schedule second move
+                if (aiMode && aiTurn) {
+                    aiMoveTimer.start();
+                }
+            }
+            else if (card2Selected == null) {
+                card2Selected = tile;
+                int index1 = board.indexOf(card1Selected);
+                int index2 = board.indexOf(card2Selected);
+                card2Selected.setIcon(cardSet.get(index2).cardImageIcon);
+
+                boolean matched = card1Selected.getIcon().toString().equals(card2Selected.getIcon().toString());
+                
+                // Update AI memory if in AI mode
+                if (aiMode && aiAgent != null) {
+                    String cardName1 = cardSet.get(index1).cardName;
+                    String cardName2 = cardSet.get(index2).cardName;
+                    aiAgent.updateMemory(index1, index2, cardName1, cardName2, matched);
+                    
+                    // Update game state
+                    gameState.revealCard(index1, cardName1);
+                    gameState.revealCard(index2, cardName2);
+                    
+                    if (matched) {
+                        gameState.markMatched(index1, index2);
+                    } else {
+                        gameState.incrementErrors();
+                    }
+                }
+
+                if (!matched) {
+                    errorCount += 1;
+                    textLabel.setText("Errors: " + Integer.toString(errorCount));
+                    hideCardTimer.start();
+                }
+                else {
+                    card1Selected = null;
+                    card2Selected = null;
+                    
+                    // Check if game is won
+                    if (isGameWon()) {
+                        aiStatusLabel.setText("Game Complete!");
+                        gameReady = false;
+                    } else if (aiMode) {
+                        // Continue with same player's turn if they got a match
+                        updateAIStatus();
+                        if (aiTurn) {
+                            aiMoveTimer.start();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    boolean isGameWon() {
+        for (int i = 0; i < board.size(); i++) {
+            if (board.get(i).getIcon() == cardBackImageIcon) {
+                return false;
+            }
+        }
+        return true;
+    }
+    
+    void restartGame() {
+        gameReady = false;
+        restartButton.setEnabled(false);
+        card1Selected = null;
+        card2Selected = null;
+        shuffleCards();
+
+        //re assign buttons with new cards
+        for (int i = 0; i < board.size(); i++) {
+            board.get(i).setIcon(cardSet.get(i).cardImageIcon);
+        }
+
+        errorCount = 0;
+        textLabel.setText("Errors: " + Integer.toString(errorCount));
+        
+        // Reset AI state
+        if (aiMode && aiAgent != null) {
+            aiAgent.resetMemory();
+            gameState.reset();
+            aiTurn = false; // Human always starts
+            updateAIStatus();
+        }
+        
+        hideCardTimer.start();
     }
 
     public static void main(String[] args) throws Exception {
